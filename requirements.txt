@@ -5,4 +5,4 @@ scikit-learn
 streamlit
 xgboost
 matplotlib
-crewai crewai-tools
+'crewai[tools]'
