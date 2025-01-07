@@ -1,8 +1,8 @@
-shap
-numpy
+streamlit
 pandas
 scikit-learn
-streamlit
-xgboost
 matplotlib
-crewai
+google-generativeai
+PyPDF2
+nltk
+tqdm
