@@ -7,3 +7,4 @@ PyPDF2
 nltk
 tqdm
 sentence-transformers
+langchain
