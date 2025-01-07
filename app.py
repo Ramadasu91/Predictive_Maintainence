@@ -3,14 +3,19 @@ import pandas as pd
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_curve, auc
-import matplotlib.pyplot as plt
-from crewai import Agent, Task, Crew, Process, LLM, Knowledge
-from crewai.knowledge.source import PDFKnowledgeSource
 import os
+from sentence_transformers import SentenceTransformer
+from sklearn.metrics.pairwise import cosine_similarity
+import numpy as np
+import google.generativeai as genai
 
 # Get GEMINI API key
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
+google_api_key = os.environ.get("GOOGLE_API_KEY")
+
+genai.configure(api_key=google_api_key)
+
+# Initialize Sentence Transformer for embeddings
+embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
 
 # Load datasets
 df1 = pd.read_csv("Machine_failure.csv")
@@ -41,33 +46,52 @@ rot_speed_input = st.number_input('Rotational speed [rpm]')
 torque_input = st.number_input('Torque [Nm]')
 tool_wear_input = st.number_input('Tool wear [min]')
 
-# Initialize the agent
-pdf_source = PDFKnowledgeSource(file_paths=["machine_failures.pdf", "maintenance_guidelines.pdf"])
-knowledge = Knowledge(collection_name="machine_failure_knowledge", sources=[pdf_source])
-gemini_llm = LLM(model="gemini/gemini-1.5-pro-002", api_key=GEMINI_API_KEY, temperature=0)
+# Function to extract and chunk text from PDF files
+def extract_and_chunk_pdfs(pdf_files):
+    chunks = []
+    for pdf_file in pdf_files:
+        with open(pdf_file, "r", encoding="utf-8") as f:
+            text = f.read()
+        chunk_size = 500
+        overlap = 50
+        for i in range(0, len(text), chunk_size - overlap):
+            chunks.append(text[i:i + chunk_size])
+    return chunks
 
-agent = Agent(
-    role="Machine Failure Consultant",
-    goal="Provide root cause analysis and solution recommendations for machine failures.",
-    backstory="You are a highly skilled consultant specializing in diagnosing and solving machine failures based on expert knowledge.",
-    verbose=True,
-    allow_delegation=False,
-    llm=gemini_llm,
-)
+# Load and preprocess PDF knowledge base
+pdf_files = ["machine_failures.pdf", "maintenance_guidelines.pdf"]
+text_chunks = extract_and_chunk_pdfs(pdf_files)
+text_embeddings = np.array([embedding_model.encode(chunk) for chunk in text_chunks])
 
-task = Task(
-    description="Analyze the provided failure reason and recommend a root cause analysis and solutions: {failure_reason}",
-    expected_output="A detailed root cause analysis and possible solutions.",
-    agent=agent,
-)
+# Retrieval function
+def retrieve_relevant_chunks(query, text_chunks, text_embeddings, top_k=3):
+    query_embedding = embedding_model.encode(query)
+    similarities = cosine_similarity([query_embedding], text_embeddings)[0]
+    top_indices = similarities.argsort()[-top_k:][::-1]
+    return [text_chunks[i] for i in top_indices]
 
-crew = Crew(
-    agents=[agent],
-    tasks=[task],
-    verbose=True,
-    process=Process.sequential,
-    knowledge_sources=[pdf_source],
-)
+# Prompt template
+prompt_template = """
+You are a machine failure consultant assisting with root cause analysis and recommendations for maintenance. Based on the provided context, analyze the failure reason and suggest actionable solutions.
+
+Context:
+{context}
+
+Failure Reason: {failure_reason}
+
+Provide a detailed analysis and solutions in a concise and professional tone:
+"""
+
+# Function to query generative AI
+def query_generative_ai(context, failure_reason):
+    model = "models/chat-bison-001"
+    final_prompt = prompt_template.format(context=context, failure_reason=failure_reason)
+    response = genai.chat(
+        model=model,
+        messages=[{"content": final_prompt}],
+        temperature=0.3
+    )
+    return response["candidates"][0]["content"]
 
 # Predict Machine Failure
 if st.button('Predict Machine Failure'):
@@ -95,10 +119,13 @@ if st.button('Predict Machine Failure'):
 
         reason_pred = model2.predict(input_data)[0]
 
-        # Use the agent for root cause analysis
-        failure_reason_text = f"Considering the failure reason '{reason_pred}', provide a root cause analysis to fix it and make the machine healthier."
-        agent_result = crew.kickoff(inputs={"failure_reason": failure_reason_text})
-        
+        # Retrieve relevant knowledge
+        query = f"Failure reason: {reason_pred}. Provide root cause analysis and maintenance solutions."
+        relevant_chunks = retrieve_relevant_chunks(query, text_chunks, text_embeddings)
+        context = "\n".join(relevant_chunks)
+
+        # Generate root cause analysis and solutions
+        agent_result = query_generative_ai(context, reason_pred)
 
         st.info(f"The reason for failure is {reason_pred}")
         st.subheader("Consultant's Root Cause Analysis")
