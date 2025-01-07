@@ -59,7 +59,7 @@ def extract_and_chunk_pdfs(pdf_files):
     return chunks
 
 # Load and preprocess PDF knowledge base
-pdf_files = ["machine_failures.pdf", "maintenance_guidelines.pdf"]
+pdf_files = ["PWguvM6DWT.pdf"]
 text_chunks = extract_and_chunk_pdfs(pdf_files)
 text_embeddings = np.array([embedding_model.encode(chunk) for chunk in text_chunks])
 
