@@ -109,7 +109,8 @@ if st.button('Predict Machine Failure'):
 
         # Use Retrieval QA chain for root cause analysis
         query = f"Failure reason: {reason_pred}. Provide root cause analysis and maintenance solutions."
-        agent_result = qa_chain.run({"failure_reason": reason_pred, "context": retriever.retrieve(query)})
+        context = retriever.retrieve(query)
+        agent_result = qa_chain.run({"failure_reason": reason_pred, "context": context})
 
         st.info(f"The reason for failure is {reason_pred}")
         st.subheader("Consultant's Root Cause Analysis")
