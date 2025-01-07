@@ -7,12 +7,18 @@ import os
 from sentence_transformers import SentenceTransformer
 from sklearn.metrics.pairwise import cosine_similarity
 import numpy as np
-import google.generativeai as genai
+from langchain.chat_models import ChatGooglePalm
+from langchain.chains import RetrievalQA
+from langchain.prompts import PromptTemplate
+from langchain.vectorstores import FAISS
+from langchain.text_splitter import CharacterTextSplitter
+from langchain.document_loaders import PyPDFLoader
 
 # Get GEMINI API key
 google_api_key = os.environ.get("GOOGLE_API_KEY")
 
-genai.configure(api_key=google_api_key)
+# Initialize ChatGooglePalm model
+chat_model = ChatGooglePalm(model="models/chat-bison-001", api_key=google_api_key)
 
 # Initialize Sentence Transformer for embeddings
 embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
@@ -46,52 +52,34 @@ rot_speed_input = st.number_input('Rotational speed [rpm]')
 torque_input = st.number_input('Torque [Nm]')
 tool_wear_input = st.number_input('Tool wear [min]')
 
-# Function to extract and chunk text from PDF files
-def extract_and_chunk_pdfs(pdf_files):
-    chunks = []
-    for pdf_file in pdf_files:
-        with open(pdf_file, "r", encoding="utf-8") as f:
-            text = f.read()
-        chunk_size = 500
-        overlap = 50
-        for i in range(0, len(text), chunk_size - overlap):
-            chunks.append(text[i:i + chunk_size])
-    return chunks
-
 # Load and preprocess PDF knowledge base
-pdf_files = ["PWguvM6DWT.pdf"]
-text_chunks = extract_and_chunk_pdfs(pdf_files)
-text_embeddings = np.array([embedding_model.encode(chunk) for chunk in text_chunks])
+loader = PyPDFLoader(["PWguvM6DWT.pdf"])
+documents = loader.load()
+text_splitter = CharacterTextSplitter(chunk_size=500, chunk_overlap=50)
+docs_split = text_splitter.split_documents(documents)
 
-# Retrieval function
-def retrieve_relevant_chunks(query, text_chunks, text_embeddings, top_k=3):
-    query_embedding = embedding_model.encode(query)
-    similarities = cosine_similarity([query_embedding], text_embeddings)[0]
-    top_indices = similarities.argsort()[-top_k:][::-1]
-    return [text_chunks[i] for i in top_indices]
+# Create FAISS VectorStore for knowledge retrieval
+vectorstore = FAISS.from_documents(docs_split, embedding_model)
+retriever = vectorstore.as_retriever()
 
 # Prompt template
-prompt_template = """
-You are a machine failure consultant assisting with root cause analysis and recommendations for maintenance. Based on the provided context, analyze the failure reason and suggest actionable solutions.
+prompt_template = PromptTemplate(
+    template="""
+    You are a machine failure consultant assisting with root cause analysis and recommendations for maintenance. 
+    Based on the provided context, analyze the failure reason and suggest actionable solutions.
 
-Context:
-{context}
+    Context:
+    {context}
 
-Failure Reason: {failure_reason}
+    Failure Reason: {failure_reason}
 
-Provide a detailed analysis and solutions in a concise and professional tone:
-"""
+    Provide a detailed analysis and solutions in a concise and professional tone:
+    """,
+    input_variables=["context", "failure_reason"]
+)
 
-# Function to query generative AI
-def query_generative_ai(context, failure_reason):
-    model = "models/chat-bison-001"
-    final_prompt = prompt_template.format(context=context, failure_reason=failure_reason)
-    response = genai.chat(
-        model=model,
-        messages=[{"content": final_prompt}],
-        temperature=0.3
-    )
-    return response["candidates"][0]["content"]
+# Initialize Retrieval QA chain
+qa_chain = RetrievalQA.from_chain_type(llm=chat_model, retriever=retriever, prompt=prompt_template)
 
 # Predict Machine Failure
 if st.button('Predict Machine Failure'):
@@ -119,13 +107,9 @@ if st.button('Predict Machine Failure'):
 
         reason_pred = model2.predict(input_data)[0]
 
-        # Retrieve relevant knowledge
+        # Use Retrieval QA chain for root cause analysis
         query = f"Failure reason: {reason_pred}. Provide root cause analysis and maintenance solutions."
-        relevant_chunks = retrieve_relevant_chunks(query, text_chunks, text_embeddings)
-        context = "\n".join(relevant_chunks)
-
-        # Generate root cause analysis and solutions
-        agent_result = query_generative_ai(context, reason_pred)
+        agent_result = qa_chain.run({"failure_reason": reason_pred, "context": retriever.retrieve(query)})
 
         st.info(f"The reason for failure is {reason_pred}")
         st.subheader("Consultant's Root Cause Analysis")
